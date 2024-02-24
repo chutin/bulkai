@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+const (
+	MaxFileName = 200
+)
+
 type Preview struct {
 	URL            string
 	Prompt         string
@@ -213,7 +217,7 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 func (i *Image) FileName() string {
 	prompt := fixString(i.Prompt)
 	ext := filepath.Ext(strings.Split(i.URL, "?")[0])
-	return fmt.Sprintf("%s_%05d_%02d%s", prompt, i.PromptIndex, i.ImageIndex, ext)
+	return fmt.Sprintf("%s(%d)(%d)%s", prompt, i.PromptIndex, i.ImageIndex, ext)
 }
 
 func (i *Image) FileNames() []string {
@@ -221,14 +225,16 @@ func (i *Image) FileNames() []string {
 	prompt := fixString(i.Prompt)
 	ext := filepath.Ext(strings.Split(i.URL, "?")[0])
 	for j := 0; j < 4; j++ {
-		names = append(names, fmt.Sprintf("%s_%05d_%02d%s", prompt, i.PromptIndex, i.ImageIndex+j, ext))
+		names = append(names, fmt.Sprintf("%s(%d)(%d)%s", prompt, i.PromptIndex, i.ImageIndex+j, ext))
 	}
 	return names
 }
 
-var nonAlphanumericRegex = regexp.MustCompile(`[^\p{L}\p{N} _]+`)
+var nonAlphanumericRegex = regexp.MustCompile(`[^\p{L}\p{N} _]+-`)
 
 func fixString(str string) string {
+	str = strings.ReplaceAll(str, "é", "e")
+	str = strings.Split(str, "--")[0]
 	split := strings.Split(str, " ")
 	var filtered []string
 	for _, s := range split {
@@ -240,14 +246,27 @@ func fixString(str string) string {
 		}
 		filtered = append(filtered, s)
 	}
-	str = strings.Join(filtered, "_")
+	str = strings.Join(filtered, " ")
 
 	str = nonAlphanumericRegex.ReplaceAllString(str, "")
-	str = strings.ReplaceAll(str, " ", "_")
+	//str = strings.ReplaceAll(str, " ", "_")
 
-	// Limit to 50 characters to avoid issues with file names
-	if len(str) > 50 {
-		str = str[:50]
+	// Limit to 200 characters to avoid issues with file names
+	if len(str) > MaxFileName {
+		//str = str[:MaxFileName]
+		words := strings.Fields(str) // Split input string into words
+		combineStr := ""
+		for _, word := range words {
+			if len(combineStr+word) > MaxFileName {
+				break
+			}
+			space := " "
+			if combineStr == "" {
+				space = ""
+			}
+			combineStr = combineStr + space + word
+		}
+		str = combineStr
 	}
 	return str
 }

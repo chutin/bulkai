@@ -1,12 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 
@@ -15,6 +24,7 @@ import (
 	"github.com/peterbourgon/ff/v3"
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"github.com/peterbourgon/ff/v3/ffyaml"
+	"golang.org/x/term"
 )
 
 // Build flags
@@ -53,7 +63,7 @@ func newCommand() *ffcli.Command {
 
 func newGenerateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("bulk", flag.ExitOnError)
-	_ = fs.String("config", "bulkai.yaml", "config file (optional)")
+	_ = fs.String("config", "config.yaml", "config file (optional)")
 
 	cfg := &bulkai.Config{}
 	fs.StringVar(&cfg.Bot, "bot", "", "bot name")
@@ -101,6 +111,13 @@ func newGenerateCommand() *ffcli.Command {
 		ShortHelp: "generate images in bulk",
 		FlagSet:   fs,
 		Exec: func(ctx context.Context, args []string) error {
+			ch := make(chan bool)
+			go tryLoginFromCache(ch)
+			result := <-ch
+			if !result {
+				fmt.Println("login failed. Please try again")
+				return nil
+			}
 			loadSession(fsSession, cfg.SessionFile)
 			cfg.Prompts = prompts
 			last := 0
@@ -190,4 +207,233 @@ func (f *fsStrings) String() string {
 func (f *fsStrings) Set(value string) error {
 	*f = append(*f, value)
 	return nil
+}
+
+// LOGIN ===============================================
+
+type UserData struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Credit   int    `json:"credit"`
+}
+
+func tryLoginFromCache(ch chan<- bool) {
+	// Check if the file exists
+	var userData UserData
+	_, err := os.Stat(getDatFilePath())
+	if os.IsNotExist(err) {
+		fmt.Println("login data does not exist. please login first")
+
+		userData = loginOrRegister()
+	} else {
+		userData, err = loadUserData()
+		if err != nil {
+			fmt.Println("Error reading file:", err)
+			userData = loginOrRegister()
+		}
+	}
+
+	jsonData, err := json.Marshal(userData)
+	if err != nil {
+		fmt.Printf("Error marshalling JSON: %v\n", err)
+		return
+	}
+
+	resp, err := http.Post("https://us-central1-money-income-server.cloudfunctions.net/login", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Printf("Error sending request: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("Login successful")
+		saveUserData(userData)
+		ch <- true
+	} else if resp.StatusCode == http.StatusUnauthorized {
+		fmt.Println("Invalid username or password")
+	} else {
+		fmt.Printf("Unexpected response status: %s\n", resp.Status)
+	}
+}
+
+func loginOrRegister() UserData {
+	reader := bufio.NewReader(os.Stdin)
+	loop := 0
+	input := ""
+	for {
+		if loop != 0 {
+			input, _ = reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+		}
+
+		if input == "y" {
+			return loginByUser()
+		} else if input == "n" {
+			return register()
+		} else {
+			fmt.Print("Login with existing account [y/n]: ")
+		}
+		loop++
+	}
+}
+
+func loginByUser() UserData {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	fmt.Print("Enter password: ")
+	password := getPasswordInput()
+	fmt.Println()
+
+	// Create UserData object
+	userData := UserData{
+		Username: username,
+		Password: password,
+	}
+
+	return userData
+}
+
+func register() UserData {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Enter username and password to register")
+	fmt.Print("Enter username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	fmt.Print("Enter password: ")
+	password := getPasswordInput()
+	// Prompt user to repeat password
+	fmt.Print("Confirm password: ")
+	repeatedPassword := getPasswordInput()
+
+	// Check if passwords match
+	if password != repeatedPassword {
+		fmt.Println("Passwords do not match. Please try again.")
+		return register()
+	}
+
+	// Create UserData object
+	userData := UserData{
+		Username: username,
+		Password: password,
+	}
+
+	jsonData, err := json.Marshal(userData)
+	if err != nil {
+		fmt.Printf("Error marshalling JSON: %v\n", err)
+	}
+
+	resp, err := http.Post("https://us-central1-money-income-server.cloudfunctions.net/createUser", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Printf("Error sending request: %v\n", err)
+	}
+	defer resp.Body.Close()
+
+	err = json.NewDecoder(resp.Body).Decode(&userData)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		fmt.Println("Register successful")
+		return userData
+	} else if resp.StatusCode == http.StatusUnauthorized {
+		fmt.Println("Invalid username or password")
+	} else {
+		fmt.Printf("Unexpected response status: %s\n", resp.Status)
+	}
+
+	return register()
+}
+
+var encryptionKey = []byte("encryption-key-0")
+
+func saveUserData(userData UserData) error {
+	// Convert user data to JSON
+	jsonData, err := json.Marshal(userData)
+	if err != nil {
+		return err
+	}
+
+	// Encrypt the JSON data
+	encryptedData, err := encrypt(jsonData, encryptionKey)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	// Write JSON data to .dat file
+	err = os.WriteFile(getDatFilePath(), encryptedData, 0644)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	return nil
+}
+
+func loadUserData() (UserData, error) {
+	// Read encrypted data from .dat file
+	encryptedData, err := os.ReadFile(getDatFilePath())
+	if err != nil {
+		return UserData{}, err
+	}
+
+	// Decrypt the data
+	decryptedData, err := decrypt(encryptedData, encryptionKey)
+	if err != nil {
+		return UserData{}, err
+	}
+
+	// Decode JSON data into UserData struct
+	var userData UserData
+	err = json.Unmarshal(decryptedData, &userData)
+	if err != nil {
+		return UserData{}, err
+	}
+	return userData, nil
+}
+
+func getDatFilePath() string {
+	return filepath.Join(os.Getenv("LOCALAPPDATA"), "ImageModify", "data-go.dat")
+}
+
+func encrypt(data []byte, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext := make([]byte, aes.BlockSize+len(data))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], data)
+	return ciphertext, nil
+}
+
+func decrypt(data []byte, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < aes.BlockSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	iv := data[:aes.BlockSize]
+	data = data[aes.BlockSize:]
+	stream := cipher.NewCFBDecrypter(block, iv)
+	stream.XORKeyStream(data, data)
+	return data, nil
+}
+
+func getPasswordInput() string {
+	password, _ := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	return strings.TrimSpace(string(password))
 }
