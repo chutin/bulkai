@@ -399,6 +399,30 @@ func loadUserData() (UserData, error) {
 }
 
 func getDatFilePath() string {
+	// Get the path to the "LOCALAPPDATA" directory
+	localAppDataDir := os.Getenv("LOCALAPPDATA")
+	if localAppDataDir == "" {
+		fmt.Println("Error: LOCALAPPDATA environment variable is not set.")
+		return ""
+	}
+
+	// Construct the directory path for "ImageModify" within "LOCALAPPDATA"
+	imageModifyDir := filepath.Join(localAppDataDir, "ImageModify")
+
+	// Check if the directory exists
+	_, err := os.Stat(imageModifyDir)
+	if os.IsNotExist(err) {
+		// Directory does not exist, create it
+		err := os.MkdirAll(imageModifyDir, 0755) // 0755 is the default permission mode
+		if err != nil {
+			fmt.Println("Error creating directory:", err)
+			return ""
+		}
+	} else if err != nil {
+		// Some error occurred while checking directory existence
+		fmt.Println("Error:", err)
+		return ""
+	}
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "ImageModify", "data-go.dat")
 }
 
