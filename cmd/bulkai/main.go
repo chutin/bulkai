@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -299,11 +300,21 @@ func loginByUser() UserData {
 }
 
 func register() UserData {
+	specialCharsRegex := regexp.MustCompile(`[[:^alnum:]]`)
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Enter username and password to register")
 	fmt.Print("Enter username: ")
 	username, _ := reader.ReadString('\n')
+
+	if strings.Contains(username, " ") {
+		fmt.Println("Username must not contain space")
+		return register()
+	}
 	username = strings.TrimSpace(username)
+	if specialCharsRegex.MatchString(username) {
+		fmt.Println("Username must not contain special characters")
+		return register()
+	}
 
 	fmt.Print("Enter password: ")
 	password := getPasswordInput()
@@ -311,6 +322,10 @@ func register() UserData {
 	fmt.Print("Confirm password: ")
 	repeatedPassword := getPasswordInput()
 
+	if strings.Contains(password, " ") {
+		fmt.Println("Passwords must not contain space")
+		return register()
+	}
 	// Check if passwords match
 	if password != repeatedPassword {
 		fmt.Println("Passwords do not match. Please try again.")
