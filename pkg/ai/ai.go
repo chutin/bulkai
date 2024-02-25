@@ -98,6 +98,8 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		if _, ok := skipLookup[i]; ok {
 			continue
 		}
+		// fix prompt option
+		p = strings.ReplaceAll(p, "-- ", "--")
 		chunks[i%concurrency] = append(chunks[i%concurrency], entry{
 			prompt: p,
 			index:  i,
