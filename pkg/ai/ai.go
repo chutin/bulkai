@@ -100,7 +100,6 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		}
 		// fix prompt option
 		p = strings.ReplaceAll(p, "-- ", "--")
-		p = strings.ReplaceAll(p, "-- ", "--")
 		p = strings.ReplaceAll(p, "\"", "")
 		chunks[i%concurrency] = append(chunks[i%concurrency], entry{
 			prompt: p,
@@ -238,6 +237,9 @@ var nonAlphanumericRegex = regexp.MustCompile(`[^\p{L}\p{N} _]+-`)
 
 func fixString(str string) string {
 	str = strings.ReplaceAll(str, "é", "e")
+	str = strings.ReplaceAll(str, ".", "")
+	str = strings.ReplaceAll(str, "-", " ")
+	str = strings.ReplaceAll(str, "'", " ")
 	str = strings.Split(str, "--")[0]
 	split := strings.Split(str, " ")
 	var filtered []string
